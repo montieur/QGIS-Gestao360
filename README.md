@@ -9,6 +9,7 @@ Ferramenta avançada de auditoria e processamento de dados de imagens 360º (Str
 ## 📸 Interface
 
 ![Interface do Gestão 360](interface.png)
+
 *(Painel de controle integrado ao QGIS)*
 
 ---
@@ -54,3 +55,4 @@ Este projeto está sob a licença MIT - sinta-se livre para usar, modificar e co
 
 ---
 **Desenvolvido por:** [Jordy/TecGeo]
+
