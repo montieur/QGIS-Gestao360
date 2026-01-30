@@ -1,0 +1,18 @@
+# QGIS e Dados Geoespaciais
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.qgz
+*.qgs
+*.gpx
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Sistema
+.DS_Store
+Thumbs.db
