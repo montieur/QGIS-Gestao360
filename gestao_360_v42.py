@@ -3,7 +3,7 @@ from qgis.gui import QgsDockWidget
 from qgis.utils import iface
 from qgis.PyQt.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QAction, QLineEdit,
                              QMessageBox, QComboBox, QDialog, QDialogButtonBox, QFrame, QFileDialog, QApplication)
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import Qt, QDateTime, QVariant
 from qgis.PyQt.QtGui import QColor
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
@@ -22,9 +22,8 @@ CACHE_360 = {
     'processed': False
 }
 
-# --- PARÂMETROS ---
-NOME_VIAS_PADRAO = 'valentina_vias'
-EPSG_PROJETADO = 'EPSG:31985' # UTM 25S (Paraíba)
+# --- PARÂMETROS GERAIS ---
+EPSG_PROJETADO = 'EPSG:31985' # UTM 25S
 DIST_MIN = 2.7 
 TAMANHO_GRID = 250 
 LIMITE_GRID_SEGURO = 4000
@@ -64,46 +63,25 @@ def ativar_rotulos(layer):
     layer.triggerRepaint()
 
 def aplicar_estilo_grid_seguro(vl):
-    # Estilo Verde Transparente (OK)
-    sym_ok = QgsFillSymbol.createSimple({
-        'color': '0,255,0,40',      
-        'outline_color': '0,180,0',
-        'outline_width': '0.6',
-        'outline_style': 'solid'
-    })
-    # Estilo Transparente Borda Azul (Pendente)
-    sym_pendente = QgsFillSymbol.createSimple({
-        'color': '0,0,0,0',         
-        'outline_color': '0,0,255', 
-        'outline_width': '0.4',
-        'outline_style': 'dash'
-    })
-
+    sym_ok = QgsFillSymbol.createSimple({'color': '0,255,0,40', 'outline_color': '0,180,0', 'outline_width': '0.6', 'outline_style': 'solid'})
+    sym_pendente = QgsFillSymbol.createSimple({'color': '0,0,0,0', 'outline_color': '0,0,255', 'outline_width': '0.4', 'outline_style': 'dash'})
     cat_ok = QgsRendererCategory("OK", sym_ok, "Concluído")
     cat_pendente = QgsRendererCategory("Pendente", sym_pendente, "Pendente")
-    
     renderer = QgsCategorizedSymbolRenderer("status", [cat_ok, cat_pendente])
     vl.setRenderer(renderer)
     vl.setOpacity(0.7)
 
 def gerar_grid_persistente(layer_ref):
-    """
-    Cria o Grid e salva no disco como GeoPackage (.gpkg)
-    """
     try:
-        # 1. Validação CRS
         if not layer_ref.crs().isValid():
             iface.messageBar().pushMessage("Erro", "Camada sem CRS!", level=2)
             return None
-
-        # 2. Transformação (Cálculo da Geometria em Metros)
         crs_src = layer_ref.crs()
         crs_dest = QgsCoordinateReferenceSystem(EPSG_PROJETADO)
         transform = QgsCoordinateTransform(crs_src, crs_dest, QgsProject.instance())
         ext_original = layer_ref.extent()
         ext_utm = transform.transformBoundingBox(ext_original)
         
-        # 3. Trava de Segurança (Anti-Crash)
         width = ext_utm.width()
         height = ext_utm.height()
         cols = math.ceil(width / TAMANHO_GRID)
@@ -112,38 +90,18 @@ def gerar_grid_persistente(layer_ref):
             QMessageBox.critical(None, "Segurança", "Área muito grande para o Grid.")
             return None
 
-        # 4. Salvar Como (Diálogo)
-        caminho_arquivo, _ = QFileDialog.getSaveFileName(
-            None, 
-            "Salvar Grid de Controle Como...", 
-            "", 
-            "GeoPackage (*.gpkg)"
-        )
-        
-        if not caminho_arquivo:
-            return None # Cancelado
-            
-        if not caminho_arquivo.endswith('.gpkg'):
-            caminho_arquivo += '.gpkg'
+        caminho_arquivo, _ = QFileDialog.getSaveFileName(None, "Salvar Grid de Controle Como...", "", "GeoPackage (*.gpkg)")
+        if not caminho_arquivo: return None
+        if not caminho_arquivo.endswith('.gpkg'): caminho_arquivo += '.gpkg'
 
-        # 5. Criar Arquivo Físico
         fields = QgsFields()
         fields.append(QgsField("status", QVariant.String))
-        
-        writer = QgsVectorFileWriter(
-            caminho_arquivo,
-            "UTF-8",
-            fields,
-            QgsWkbTypes.Polygon,
-            crs_dest,
-            "GPKG"
-        )
+        writer = QgsVectorFileWriter(caminho_arquivo, "UTF-8", fields, QgsWkbTypes.Polygon, crs_dest, "GPKG")
         
         if writer.hasError() != QgsVectorFileWriter.NoError:
             QMessageBox.critical(None, "Erro", f"Erro ao criar arquivo: {writer.errorMessage()}")
             return None
 
-        # 6. Gerar Quadrados
         xmin = math.floor(ext_utm.xMinimum() / TAMANHO_GRID) * TAMANHO_GRID
         ymin = math.floor(ext_utm.yMinimum() / TAMANHO_GRID) * TAMANHO_GRID
         
@@ -152,15 +110,12 @@ def gerar_grid_persistente(layer_ref):
                 x = xmin + (i * TAMANHO_GRID)
                 y = ymin + (j * TAMANHO_GRID)
                 geom = QgsGeometry.fromRect(QgsRectangle(x, y, x + TAMANHO_GRID, y + TAMANHO_GRID))
-                
                 f = QgsFeature()
                 f.setGeometry(geom)
                 f.setAttributes(["Pendente"])
                 writer.addFeature(f)
+        del writer 
         
-        del writer # Fecha e salva o arquivo
-        
-        # 7. Carregar Camada
         vl = QgsVectorLayer(caminho_arquivo, "Grid_Controle_360", "ogr")
         if not vl.isValid():
             QMessageBox.critical(None, "Erro", "Falha ao carregar o arquivo salvo.")
@@ -169,21 +124,16 @@ def gerar_grid_persistente(layer_ref):
         aplicar_estilo_grid_seguro(vl)
         QgsProject.instance().addMapLayer(vl)
         CACHE_360['grid_layer'] = vl
-        
         iface.mapCanvas().setExtent(ext_original)
         iface.mapCanvas().refresh()
-        
         iface.messageBar().pushMessage("Sucesso", f"Grid salvo em: {caminho_arquivo}", level=3)
         return vl
-        
     except Exception as e:
         QMessageBox.critical(None, "Erro", f"Falha ao gerar grid: {str(e)}")
         return None
 
 def alternar_status_grid():
     vl = CACHE_360.get('grid_layer')
-    
-    # Tenta recuperar layer se perdeu a referência
     if not vl or not vl.isValid():
         layers = QgsProject.instance().mapLayersByName("Grid_Controle_360")
         if layers:
@@ -204,7 +154,6 @@ def alternar_status_grid():
         atual = f['status']
         novo = 'Pendente' if atual == 'OK' else 'OK'
         vl.changeAttributeValue(f.id(), idx, novo)
-    
     vl.commitChanges() 
     vl.triggerRepaint()
     vl.removeSelection() 
@@ -236,42 +185,123 @@ def resetar_grid_inteligente():
         else:
             vl.rollBack()
             return
-
     vl.commitChanges()
     vl.triggerRepaint()
     iface.messageBar().pushMessage("Grid", msg, level=3)
 
-# --- 2. SELETOR E TEMPO ---
+def calcular_tempo_por_atributos(layer, field_name):
+    times = []
+    idx = layer.fields().indexOf(field_name)
+    if idx == -1: return timedelta(0)
+
+    fmt_list = [
+        "%Y:%m:%d %H:%M:%S",   
+        "%Y-%m-%d %H:%M:%S",   
+        "%Y/%m/%d %H:%M:%S",
+        "%d/%m/%Y %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y:%m:%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y: %m: %d %H: %M: %S"
+    ]
+
+    for feat in layer.getFeatures():
+        val = feat[idx]
+        if not val or str(val).upper() == 'NULL': continue
+        if isinstance(val, QDateTime):
+            times.append(val.toPyDateTime())
+            continue
+        s_val = str(val).strip()
+        parsed = None
+        for fmt in fmt_list:
+            try:
+                parsed = datetime.strptime(s_val, fmt)
+                break
+            except ValueError:
+                pass
+        if parsed:
+            times.append(parsed)
+
+    if times:
+        return max(times) - min(times)
+    return timedelta(0)
+
+
+# --- 2. SELETOR V44 (MÚLTIPLAS CAMADAS) ---
 class SeletorCompleto(QDialog):
     def __init__(self):
         super().__init__(iface.mainWindow())
-        self.setWindowTitle('Workstation V42 (Final)')
-        self.setMinimumWidth(400)
+        self.setWindowTitle('Workstation V44 (Setup de Projeto)')
+        self.setMinimumWidth(450)
         self.gpx_files = []
+        
         layout = QVBoxLayout()
-        layout.addWidget(QLabel('<b>1. Camada de Pontos (QGIS):</b>'))
-        self.combo = QComboBox()
-        layers = [l.name() for l in QgsProject.instance().mapLayers().values() 
+        
+        # 1. Camada de Pontos
+        layout.addWidget(QLabel('<b>1. Camada de Pontos (Fotos 360):</b>'))
+        self.combo_pontos = QComboBox()
+        layers_pontos = [l.name() for l in QgsProject.instance().mapLayers().values() 
                   if l.type() == QgsMapLayer.VectorLayer and l.geometryType() == QgsWkbTypes.PointGeometry]
-        self.combo.addItems(layers)
-        layout.addWidget(self.combo)
+        self.combo_pontos.addItems(layers_pontos)
+        self.combo_pontos.currentIndexChanged.connect(self.atualizar_campos)
+        layout.addWidget(self.combo_pontos)
+
+        # 2. Camada de Vias (NOVO - Substitui o nome fixo)
+        layout.addWidget(QLabel('<b>2. Camada de Vias (Arruamento de Referência):</b>'))
+        self.combo_vias = QComboBox()
+        layers_linhas = [l.name() for l in QgsProject.instance().mapLayers().values() 
+                  if l.type() == QgsMapLayer.VectorLayer and l.geometryType() == QgsWkbTypes.LineGeometry]
+        self.combo_vias.addItems(layers_linhas)
+        layout.addWidget(self.combo_vias)
+        
+        # 3. Campo de Tempo
+        layout.addWidget(QLabel('<b>3. Campo de Data/Hora (Metadado do Ponto):</b>'))
+        self.combo_time = QComboBox()
+        layout.addWidget(self.combo_time)
+        
         layout.addWidget(QLabel('<hr>'))
-        layout.addWidget(QLabel('<b>2. Arquivos GPX (Tempo):</b>'))
+        
+        # 4. GPX Opcional
+        layout.addWidget(QLabel('<b>4. Opcional (Substituir tempo por GPX):</b>'))
         self.lbl_gpx = QLabel('Nenhum selecionado')
         layout.addWidget(self.lbl_gpx)
-        btn_gpx = QPushButton('📂 Selecionar GPX')
+        btn_gpx = QPushButton('📂 Adicionar GPX Externo (Plano B)')
         btn_gpx.clicked.connect(self.buscar_gpx)
         layout.addWidget(btn_gpx)
+        
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
+        
         self.setLayout(layout)
+        
+        if self.combo_pontos.count() > 0:
+            self.atualizar_campos()
+
+    def atualizar_campos(self):
+        self.combo_time.clear()
+        self.combo_time.addItem("[Não calcular tempo]")
+        layer_name = self.combo_pontos.currentText()
+        if layer_name:
+            layers = QgsProject.instance().mapLayersByName(layer_name)
+            if layers:
+                layer = layers[0]
+                fields = [f.name() for f in layer.fields()]
+                self.combo_time.addItems(fields)
+                
+                for i, f in enumerate(fields):
+                    lower_f = f.lower()
+                    if any(key in lower_f for key in ['time', 'date', 'data', 'timestamp', 'exif']):
+                        self.combo_time.setCurrentIndex(i + 1)
+                        break
+
     def buscar_gpx(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Selecione GPX", "", "GPX Files (*.gpx)")
         if files:
             self.gpx_files = files
             self.lbl_gpx.setText(f'{len(files)} arquivos.')
+            self.combo_time.setCurrentIndex(0)
 
 def calcular_tempo_mosaico(gpx_paths):
     tempo_total = timedelta(0)
@@ -292,8 +322,8 @@ def calcular_tempo_mosaico(gpx_paths):
         except: continue
     return tempo_total
 
-# --- 3. PAINEL V42 ---
-class PainelDockV42(QgsDockWidget):
+# --- 3. PAINEL V44 ---
+class PainelDockV44(QgsDockWidget):
     def __init__(self, layer_fotos, layer_vias, kb, kl_inicial_m, tempo_obj):
         super().__init__(f'Gestão 360 - {layer_fotos.name()}', iface.mainWindow())
         self.layer = layer_fotos
@@ -313,7 +343,7 @@ class PainelDockV42(QgsDockWidget):
         self.initUI()
 
     def initUI(self):
-        self.setObjectName("PainelGestao360_V42")
+        self.setObjectName("PainelGestao360_V44")
         self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         
         w = QWidget()
@@ -339,7 +369,7 @@ class PainelDockV42(QgsDockWidget):
         l_met.addWidget(self.lbl_count)
         layout.addWidget(fr_metrics)
 
-        # GRID CONTROLE (PERSISTENTE)
+        # GRID CONTROLE
         layout.addWidget(QLabel('<b>Controle de Grid:</b>'))
         h_grid = QHBoxLayout()
         btn_gera_grid = QPushButton('1. Criar e Salvar') 
@@ -468,15 +498,15 @@ class PainelDockV42(QgsDockWidget):
         iface.messageBar().pushMessage("Sucesso", f"{len(ids_para_alterar)} pontos atualizados!", level=3)
         self.atualizar_metricas_interno()
 
-# --- 4. EXECUÇÃO E SUPORTE ---
+# --- 4. EXECUÇÃO ---
 def criar_painel_visual(layer, vias, kb, kl, t_tot):
-    global painel_dock_v42
-    docks = iface.mainWindow().findChildren(QgsDockWidget, "PainelGestao360_V42")
+    global painel_dock_v44
+    docks = iface.mainWindow().findChildren(QgsDockWidget, "PainelGestao360_V44")
     for d in docks: iface.removeDockWidget(d)
-    painel_dock_v42 = PainelDockV42(layer, vias, kb, kl, t_tot)
-    iface.addDockWidget(Qt.RightDockWidgetArea, painel_dock_v42)
-    painel_dock_v42.show()
-    painel_dock_v42.atualizar_metricas_interno()
+    painel_dock_v44 = PainelDockV44(layer, vias, kb, kl, t_tot)
+    iface.addDockWidget(Qt.RightDockWidgetArea, painel_dock_v44)
+    painel_dock_v44.show()
+    painel_dock_v44.atualizar_metricas_interno()
 
 def restaurar_painel():
     if not CACHE_360['processed']: return
@@ -494,17 +524,28 @@ def adicionar_botao_toolbar():
     action.triggered.connect(restaurar_painel)
     iface.addToolBarIcon(action)
 
-def executar_v42_grid_save():
+def executar_v44_dinamico():
     d = SeletorCompleto()
     if d.exec_() != QDialog.Accepted: return
-    n_lyr = d.combo.currentText()
+    
+    n_lyr_pontos = d.combo_pontos.currentText()
+    n_lyr_vias = d.combo_vias.currentText() # LÊ A CAMADA DE VIAS SELECIONADA
+    campo_tempo = d.combo_time.currentText()
     gpxs = d.gpx_files
-    lyr_f = QgsProject.instance().mapLayersByName(n_lyr)[0]
-    try: lyr_v = QgsProject.instance().mapLayersByName(NOME_VIAS_PADRAO)[0]
-    except: return
+    
+    if not n_lyr_pontos or not n_lyr_vias:
+        iface.messageBar().pushMessage("Erro", "Você precisa selecionar a camada de pontos e a de vias.", level=2)
+        return
+
+    lyr_f = QgsProject.instance().mapLayersByName(n_lyr_pontos)[0]
+    lyr_v = QgsProject.instance().mapLayersByName(n_lyr_vias)[0]
 
     t_tot = timedelta(0)
-    if gpxs: t_tot = calcular_tempo_mosaico(gpxs)
+    if gpxs: 
+        t_tot = calcular_tempo_mosaico(gpxs)
+    elif campo_tempo != "[Não calcular tempo]":
+        t_tot = calcular_tempo_por_atributos(lyr_f, campo_tempo)
+
     CACHE_360['layer'] = lyr_f
     CACHE_360['vias'] = lyr_v
     CACHE_360['t_tot'] = t_tot
@@ -577,4 +618,4 @@ def executar_v42_grid_save():
     adicionar_botao_toolbar()
     criar_painel_visual(lyr_f, lyr_v, kb_m/1000, total_metros, t_tot)
 
-executar_v42_grid_save()
+executar_v44_dinamico()
